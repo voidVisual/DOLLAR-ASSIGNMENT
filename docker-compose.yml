@@ -1,26 +1,46 @@
 version: '3.8'
+
 services:
+
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     restart: always
     environment:
-      - NODE_ENV=production
-      - MONGO_URI=mongodb://mongo:27017/dd_db
+      NODE_ENV: production
+      MONGO_URI: mongodb://mongo:27017/dd_db
+      PORT: 8080
+    # expose to internal network only (nginx will talk to it)
     expose:
       - "8080"
     depends_on:
       - mongo
     networks:
       - app-network
+    # healthcheck: using CMD-SHELL so you can use shell features; ensure curl/wget exists in the backend image
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # NOTE: deploy is only applied when using Docker Swarm (docker stack)
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     restart: always
+    # frontend served internally by nginx service, so expose only
     expose:
       - "80"
     depends_on:
@@ -32,24 +52,54 @@ services:
         limits:
           cpus: '0.5'
           memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  nginx:
+    image: nginx:alpine
+    # container_name is fine for local dev but avoid in stacks; remove if deploying as a stack
+    container_name: mean-app-nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - app-network
 
   mongo:
-    image: mongo:6.0
+    image: mongo:6.0-alpine
     restart: always
     volumes:
       - mongo-data:/data/db
     environment:
-      - MONGO_INITDB_DATABASE=dd_db
+      MONGO_INITDB_DATABASE: dd_db
     networks:
       - app-network
+    # healthcheck: use mongosh if present, otherwise adjust to the shell available in the image
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --eval \"db.adminCommand('ping')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
 networks:
   app-network:
+    driver: bridge
 
 volumes:
   mongo-data:
+    driver: local
